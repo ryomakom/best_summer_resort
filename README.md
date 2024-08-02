@@ -16,6 +16,131 @@ jmastatsは気象庁のサイトに負荷をかけすぎないよう、データ
 というわけで、データを取得し、また100年間での気温変化と、2023年までの直近5年間の気温を表として出力するためのコードは、以下の通りです。
 
 
+```{r setup, include=FALSE}
+library(tidyverse)
+library(lubridate)
+library(jmastats)
+library(purrr)
+library(broom)
+library(kableExtra)
+
+
+# まずは1924年のデータがあるところを探します
+
+test_block_nos <- stations$block_no # 各観測所にわりふられたblock_noを取得
+
+test_data <-
+  test_block_nos %>%
+  purrr::set_names() %>%
+  purrr::map_dfr(
+    \(block_no) {
+      # year引数に与えられる年を指定 ... 1924年のみ
+      seq.int(1924, 1924) %>%
+        purrr::set_names() %>%
+        purrr::map(
+          \(x) {
+            result <- tryCatch(
+              {
+                jma_collect(item = "daily",
+                            block_no = block_no,
+                            year = x,
+                            month = 7)
+              },
+              error = function(e) {
+                message(paste("Error in collecting data for block_no:", block_no, "year:", x))
+                return(NULL)
+              }
+            )
+            # データフレームであることを確認
+            if (!is.null(result) && !is.data.frame(result)) {
+              result <- as.data.frame(result)
+            }
+            result
+          }) %>%
+        # NULLエントリを削除
+        compact() %>%
+        # 一つのデータフレームにまとめる
+        # 取得を行った年とblock_noをそれぞれyearとblock_no変数に記録する
+        dplyr::bind_rows(.id = "year") %>%
+        dplyr::mutate(block_no = block_no)
+    }
+  )
+
+# データがある観測所のblock_noを取得
+block_nos <- test_data %>%
+  filter(!is.na(temperature$`average(℃)`)) %>% 
+  distinct(block_no)
+
+block_nos <- block_nos$block_no
+
+
+# 1924~2023年のデータを取得
+historical_data <-
+  block_nos %>%
+  purrr::set_names() %>%
+  purrr::map_dfr(
+    \(block_no) {
+      # year引数に与えられる年を指定 ... 1924年から2023年まで
+      seq.int(1924, 2023) %>%
+        purrr::set_names() %>%
+        purrr::map(
+          \(x) {
+            result <- tryCatch(
+              {
+                jma_collect(item = "daily",
+                            block_no = block_no,
+                            year = x,
+                            month = 8)
+              },
+              error = function(e) {
+                message(paste("Error in collecting data for block_no:", block_no, "year:", x))
+                return(NULL)
+              }
+            )
+            # データフレームであることを確認
+            if (!is.null(result) && !is.data.frame(result)) {
+              result <- as.data.frame(result)
+            }
+            result
+          }) %>%
+        # NULLエントリを削除
+        compact() %>%
+        # 一つのデータフレームにまとめる
+        # 取得を行った年とblock_noをそれぞれyearとblock_no変数に記録する
+        dplyr::bind_rows(.id = "year") %>%
+        dplyr::mutate(block_no = block_no)
+    }
+  )
+
+# 観測所ごと、また年ごとに8月の平均気温を算出
+analysis <- historical_data %>%
+  group_by(block_no,year) %>%
+  summarize(average=mean(temperature$`average(℃)`,na.rm = TRUE) )%>%
+  mutate(year = as.numeric(year))
+
+# 観測所ごとに、平均気温を目的変数、年を説明変数にして単回帰分析
+results <-  analysis %>%
+  group_by(block_no) %>%
+  do(tidy(lm(average ~ year, data = .)))
+
+# 各観測所について、100年間の変化と直近5年の温度を示す表を出力
+results %>%
+  filter(term=="year") %>%
+  left_join(stations %>%
+              distinct(block_no,area,station_no,station_name)) %>%
+  mutate(change=estimate*100) %>% # 過去100年での温度変化
+  left_join(analysis %>%
+              filter(year >= 2019) %>%
+              group_by(block_no) %>%
+              summarize(latest_average=mean(average))) %>%
+  select(area,station_name,station_no,block_no,change,p.value,latest_average) %>%
+  arrange(station_no) %>% 
+  kable()
+
+```
+
+
+
 <table>
  <thead>
   <tr>
